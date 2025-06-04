@@ -1,0 +1,98 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Shared VPC, Subnet, Task Role, and ECS Cluster for Code Security Hands-on Environment
+
+Resources:
+
+  SharedVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.10.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: vuln-handson-vpc
+
+  SharedSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SharedVPC
+      CidrBlock: 10.10.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: vuln-handson-subnet
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref SharedVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SharedVPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SharedSubnet
+      RouteTableId: !Ref RouteTable
+
+  # Minimized Permissions allowed to ECS Task. Policies: [] means, Nothing is allowed actually because those vuln app container should not have any permissions.
+  MinimalTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: vuln-handson-taskrole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies: []
+
+  SharedEcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: vuln-handson-cluster
+
+Outputs:
+
+  SharedVpcId:
+    Description: Shared VPC ID
+    Value: !Ref SharedVPC
+    Export:
+      Name: vuln-handson-vpc-id
+
+  SharedSubnetId:
+    Description: Shared Subnet ID
+    Value: !Ref SharedSubnet
+    Export:
+      Name: vuln-handson-subnet-id
+  
+  MinimalTaskRoleArn:
+    Description: ARN of the minimal-privilege ECS Task Role
+    Value: !GetAtt MinimalTaskRole.Arn
+    Export:
+      Name: vuln-handson-taskrole-arn
+
+  SharedEcsClusterName:
+    Description: Name of the shared ECS cluster
+    Value: !Ref SharedEcsCluster
+    Export:
+      Name: vuln-handson-cluster-name
