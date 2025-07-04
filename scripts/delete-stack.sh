@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Usage: ./delete-stacks-pokemon.sh 60
-# Example: Deletes stacks codesec-emealab-xxxx to codesec-emealab-zzzz (based on first 60 attendee)
+# Example: Deletes stacks codesec-lab-xxxx to codesec-lab-zzzz (based on first 60 attendee)
 
 # Validate arguments
 if [ "$#" -ne 1 ]; then
@@ -21,13 +21,13 @@ if [ "${#ATTENDEE_NAME[@]}" -lt "$USER_COUNT" ]; then
 fi
 
 # Specify AWS local CLI profile and region, in case you "~/.aws/config" does not explicitly specify region.
-PROFILE="emea"
-REGION="eu-west-1"
+PROFILE=""
+REGION="[YOUR REGION]"
 
 # Loop through the attendee names
 for ((i = 0; i < USER_COUNT; i++)); do
   USER_ID="${ATTENDEE_NAME[$i]}"
-  STACK_NAME="codesec-emealab-${USER_ID}"
+  STACK_NAME="codesec-lab-${USER_ID}"
 
   ##
   REPO_NAME="vuln-app-${USER_ID}"

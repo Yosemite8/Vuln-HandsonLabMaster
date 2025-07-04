@@ -34,7 +34,7 @@ CIDR=""
 # Loop over attendee names
 for ((i = 0; i < USER_COUNT; i++)); do
   USER_ID="${ATTENDEE_NAME[$i]}"
-  STACK_NAME="codesec-emealab-${USER_ID}"
+  STACK_NAME="codesec-lab-${USER_ID}"
 
   echo "Creating CloudFormation stack: ${STACK_NAME}"
 
