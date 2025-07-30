@@ -1,0 +1,170 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Shared VPC, Subnet, Task Role, ECS Cluster, and CI User for Code Security Hands-on Environment
+
+Parameters:
+  TeamId:
+    Type: String
+    Description: Unique team identifier (e.g., team01, team02)
+    Default: team01
+
+Resources:
+
+  SharedVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.10.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub vuln-handson-vpc-${TeamId}
+
+  SharedSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SharedVPC
+      CidrBlock: 10.10.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub vuln-handson-subnet-${TeamId}
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref SharedVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SharedVPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SharedSubnet
+      RouteTableId: !Ref RouteTable
+
+  # Minimized Permissions allowed to ECS Task. Policies: [] means, Nothing is allowed actually because those vuln app container should not have any permissions.
+  MinimalTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub vuln-handson-taskrole-${TeamId}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies: []
+
+  SharedEcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub vuln-handson-cluster-${TeamId}
+
+  # Shared IAM User for CI/CD Pipeline
+  CIUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub vuln-ci-user-${TeamId}
+      Tags:
+        - Key: Purpose
+          Value: CI/CD Pipeline Access
+        - Key: TeamId
+          Value: !Ref TeamId
+
+  # Access Key for CI/CD Pipeline
+  CIAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref CIUser
+
+  # IAM Policy for CI/CD Pipeline with permissions for all participants
+  CITaskPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub vuln-ci-task-policy-${TeamId}
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # ECR permissions (authentication, push)
+          - Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - ecr:BatchCheckLayerAvailability
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+              - ecr:PutImage
+            Resource: !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/vuln-app-*
+          
+          # ECS permissions (service update)
+          - Effect: Allow
+            Action:
+              - ecs:UpdateService
+              - ecs:DescribeServices
+            Resource: !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/vuln-handson-cluster-${TeamId}/vuln-svc-*
+          - Effect: Allow
+            Action:
+              - ecs:DescribeClusters
+            Resource: !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/vuln-handson-cluster-${TeamId}
+      Users:
+        - !Ref CIUser
+
+Outputs:
+
+  SharedVpcId:
+    Description: Shared VPC ID
+    Value: !Ref SharedVPC
+    Export:
+      Name: !Sub vuln-handson-vpc-id-${TeamId}
+
+  SharedSubnetId:
+    Description: Shared Subnet ID
+    Value: !Ref SharedSubnet
+    Export:
+      Name: !Sub vuln-handson-subnet-id-${TeamId}
+  
+  MinimalTaskRoleArn:
+    Description: ARN of the minimal-privilege ECS Task Role
+    Value: !GetAtt MinimalTaskRole.Arn
+    Export:
+      Name: !Sub vuln-handson-taskrole-arn-${TeamId}
+
+  SharedEcsClusterName:
+    Description: Name of the shared ECS cluster
+    Value: !Ref SharedEcsCluster
+    Export:
+      Name: !Sub vuln-handson-cluster-name-${TeamId}
+
+  CIUserAccessKeyId:
+    Description: Access Key ID for CI/CD pipeline
+    Value: !Ref CIAccessKey
+    Export:
+      Name: !Sub vuln-ci-user-access-key-${TeamId}
+
+  CIUserSecretAccessKey:
+    Description: Secret Access Key for CI/CD pipeline (store securely)
+    Value: !GetAtt CIAccessKey.SecretAccessKey
+    Export:
+      Name: !Sub vuln-ci-user-secret-key-${TeamId}

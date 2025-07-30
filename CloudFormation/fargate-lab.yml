@@ -1,0 +1,217 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Vuln App running on ECS Fargate 
+
+Parameters:
+  TeamId:
+    Type: String
+    Description: Unique team identifier (e.g., team01, team02)
+    Default: team01
+
+  UserId:
+    Type: String
+    Description: Unique ID for each participant (e.g., user01)
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where ECS resources will be deployed
+
+  VpcSubnet:
+    Type: AWS::EC2::Subnet::Id
+    Description: Single subnet for Fargate task networking
+
+  AllowedIngressCidr:
+    Type: String
+    Default: "0.0.0.0/0"
+    Description: CIDR block allowed to access the Fargate service
+
+Resources:
+
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub vuln-app-${TeamId}-${UserId}
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowOnlySpecificPrefix
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - ecr:BatchCheckLayerAvailability
+            Condition:
+              StringEquals:
+                aws:ResourceAccount: !Ref "AWS::AccountId"
+
+  # Minimized permissions to run task, ECS needs to access ECR and leave logs.
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ecsTaskExecutionRole-${TeamId}-${UserId}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ECRAndLogsAccessPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/vuln-app-${TeamId}-${UserId}
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub vuln-task-${TeamId}-${UserId}
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: 
+        !ImportValue
+          Fn::Sub: vuln-handson-taskrole-arn-${TeamId}
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+        CpuArchitecture: X86_64
+      ContainerDefinitions:
+        - Name: !Sub vuln-app-${TeamId}-${UserId}
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/vuln-app-${TeamId}-${UserId}:latest"
+          PortMappings:
+            - ContainerPort: 80
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub /ecs/vuln-task-${TeamId}-${UserId}
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/vuln-task-${TeamId}-${UserId}
+      RetentionInDays: 7
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Fargate service
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref AllowedIngressCidr
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster:
+        !ImportValue
+          Fn::Sub: vuln-handson-cluster-name-${TeamId}
+      ServiceName: !Sub vuln-svc-${TeamId}-${UserId}
+      LaunchType: FARGATE
+      DesiredCount: 0
+      EnableExecuteCommand: true
+      PlatformVersion: 1.4.0
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref VpcSubnet
+          SecurityGroups:
+            - !Ref SecurityGroup
+          AssignPublicIp: ENABLED
+      TaskDefinition: !Ref TaskDefinition
+
+  # IAM User for CI/CD Pipeline
+  CIUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub vuln-ci-user-${TeamId}-${UserId}
+      Tags:
+        - Key: Purpose
+          Value: CI/CD Pipeline Access
+        - Key: TeamId
+          Value: !Ref TeamId
+        - Key: UserId
+          Value: !Ref UserId
+
+  # Access Key for CI/CD Pipeline
+  CIAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref CIUser
+
+  # IAM Policy for CI/CD Pipeline
+  CITaskPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub vuln-ci-task-policy-${TeamId}-${UserId}
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # ECR permissions (authentication, push)
+          - Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - ecr:BatchCheckLayerAvailability
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+              - ecr:PutImage
+            Resource: !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/vuln-app-${TeamId}-${UserId}
+          
+          # ECS permissions (service update)
+          - Effect: Allow
+            Action:
+              - ecs:UpdateService
+              - ecs:DescribeServices
+            Resource: !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/vuln-handson-cluster-${TeamId}/vuln-svc-${TeamId}-${UserId}
+          - Effect: Allow
+            Action:
+              - ecs:DescribeClusters
+            Resource: !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/vuln-handson-cluster-${TeamId}
+      Users:
+        - !Ref CIUser
+
+Outputs:
+  FargatePublicIPNote:
+    Description: Access the application via the public IP assigned to the Fargate task (check EC2 Console > Network Interfaces)
+    Value: "Fargate task is accessible via its public IP on port 80"
+  CIUserAccessKeyId:
+    Description: Access Key ID for CI/CD pipeline
+    Value: !Ref CIAccessKey
+    Export:
+      Name: !Sub vuln-ci-user-access-key-${TeamId}-${UserId}
+
+  CIUserSecretAccessKey:
+    Description: Secret Access Key for CI/CD pipeline (store securely)
+    Value: !GetAtt CIAccessKey.SecretAccessKey
+    Export:
+      Name: !Sub vuln-ci-user-secret-key-${TeamId}-${UserId}
+
+
+
